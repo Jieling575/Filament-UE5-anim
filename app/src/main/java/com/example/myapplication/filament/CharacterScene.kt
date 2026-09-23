@@ -1,9 +1,11 @@
 package com.example.myapplication.filament
 
 import android.content.Context
+import android.util.Log
 import android.view.Choreographer
 import android.view.Surface
 import android.view.SurfaceView
+import com.example.myapplication.combo.Move
 import com.google.android.filament.Camera
 import com.google.android.filament.Engine
 import com.google.android.filament.EntityManager
@@ -15,6 +17,7 @@ import com.google.android.filament.SwapChain
 import com.google.android.filament.Viewport
 import com.google.android.filament.android.DisplayHelper
 import com.google.android.filament.android.UiHelper
+import com.google.android.filament.gltfio.Animator
 import com.google.android.filament.gltfio.AssetLoader
 import com.google.android.filament.gltfio.FilamentAsset
 import com.google.android.filament.gltfio.Gltfio
@@ -26,13 +29,18 @@ import kotlin.math.max
 
 /**
  * 基础 Filament 场景：Engine / Renderer / Scene / View / Camera / Light，
- * 加载 glb 角色模型，并用 Choreographer 驱动逐帧渲染。
+ * 加载 glb 角色模型，并用 Choreographer 驱动逐帧渲染和骨骼动画。
  *
  * 所有方法都在主线程调用。
  */
 class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.FrameCallback {
 
     companion object {
+        private const val TAG = "CharacterScene"
+
+        /** 单帧时间步长上限，避免卡顿或从后台恢复时动画一下子跳过一大截。 */
+        private const val MAX_FRAME_DELTA_SECONDS = 0.1f
+
         init {
             Filament.init()
             Gltfio.init()
@@ -53,6 +61,10 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
     private val assetLoader = AssetLoader(engine, materialProvider, EntityManager.get())
     private val resourceLoader = ResourceLoader(engine)
     private val asset: FilamentAsset
+    private val animator: Animator
+
+    /** 每个动作在 glb 中的动画索引，按名字查出来的。 */
+    private val animationIndex: Map<Move, Int>
 
     private val uiHelper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK)
     private var displayHelper: DisplayHelper? = null
@@ -61,6 +73,9 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
 
     private val choreographer = Choreographer.getInstance()
     private var running = false
+    private var lastFrameNanos = 0L
+
+    private var idleTime = 0f
 
     init {
         view.scene = scene
@@ -89,6 +104,9 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
         scene.addEntities(asset.entities)
         fitIntoUnitCube(asset)
 
+        animator = asset.instance.animator
+        animationIndex = findAnimationIndices(animator)
+
         camera.lookAt(
             0.0, 0.0, 5.5,
             0.0, 0.0, 0.0,
@@ -107,6 +125,20 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
         resourceLoader.loadResources(asset)
         asset.releaseSourceData()
         return asset
+    }
+
+    /**
+     * 用 getAnimationName(i) 遍历 glb 里的全部动画，按名字建立 动作 -> 索引 的映射。
+     * 缺少任何一段都直接报错，免得运行时静默地播错动画。
+     */
+    private fun findAnimationIndices(animator: Animator): Map<Move, Int> {
+        val indexByName = (0 until animator.animationCount)
+            .associateBy { animator.getAnimationName(it) }
+        Log.d(TAG, "glb 中的动画: $indexByName")
+        return Move.entries.associateWith { move ->
+            indexByName[move.animationName]
+                ?: error("character.glb 中缺少动画 \"${move.animationName}\"，现有: ${indexByName.keys}")
+        }
     }
 
     /** 把模型缩放、平移到以原点为中心、边长为 2 的立方体内，方便摆相机。 */
@@ -137,6 +169,8 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
     fun resume() {
         if (running) return
         running = true
+        // 重新开始计时，暂停期间的时间不计入动画
+        lastFrameNanos = 0L
         choreographer.postFrameCallback(this)
     }
 
@@ -149,12 +183,28 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
         if (!running) return
         choreographer.postFrameCallback(this)
 
+        val deltaSeconds = if (lastFrameNanos == 0L) {
+            0f
+        } else {
+            ((frameTimeNanos - lastFrameNanos) / 1_000_000_000.0).toFloat()
+                .coerceAtMost(MAX_FRAME_DELTA_SECONDS)
+        }
+        lastFrameNanos = frameTimeNanos
+        updateAnimation(deltaSeconds)
+
         val swapChain = swapChain ?: return
         if (!uiHelper.isReadyToRender) return
         if (renderer.beginFrame(swapChain, frameTimeNanos)) {
             renderer.render(view)
             renderer.endFrame()
         }
+    }
+
+    private fun updateAnimation(deltaSeconds: Float) {
+        val idle = animationIndex.getValue(Move.IDLE)
+        idleTime = (idleTime + deltaSeconds) % animator.getAnimationDuration(idle)
+        animator.applyAnimation(idle, idleTime)
+        animator.updateBoneMatrices()
     }
 
     fun destroy() {
