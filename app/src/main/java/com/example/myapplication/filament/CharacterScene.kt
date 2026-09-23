@@ -5,6 +5,7 @@ import android.util.Log
 import android.view.Choreographer
 import android.view.Surface
 import android.view.SurfaceView
+import com.example.myapplication.combo.ComboStateMachine
 import com.example.myapplication.combo.Move
 import com.google.android.filament.Camera
 import com.google.android.filament.Engine
@@ -30,6 +31,7 @@ import kotlin.math.max
 /**
  * 基础 Filament 场景：Engine / Renderer / Scene / View / Camera / Light，
  * 加载 glb 角色模型，并用 Choreographer 驱动逐帧渲染和骨骼动画。
+ * 播放哪段动画、播到第几秒由 [ComboStateMachine] 决定，这里只负责把结果应用到骨骼上。
  *
  * 所有方法都在主线程调用。
  */
@@ -40,6 +42,15 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
 
         /** 单帧时间步长上限，避免卡顿或从后台恢复时动画一下子跳过一大截。 */
         private const val MAX_FRAME_DELTA_SECONDS = 0.1f
+
+        /** 切换动作时新旧两段动画的混合时长。 */
+        private const val CROSS_FADE_SECONDS = 0.15f
+
+        /**
+         * Filament 的 applyAnimation 会对时间取模，传入恰好等于时长的时间会跳回第一帧，
+         * 一次性动画要取末帧时用 时长 - 这个值。
+         */
+        private const val CLIP_END_EPSILON = 1e-4f
 
         init {
             Filament.init()
@@ -66,6 +77,8 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
     /** 每个动作在 glb 中的动画索引，按名字查出来的。 */
     private val animationIndex: Map<Move, Int>
 
+    private val comboStateMachine: ComboStateMachine
+
     private val uiHelper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK)
     private var displayHelper: DisplayHelper? = null
     private var surfaceView: SurfaceView? = null
@@ -75,7 +88,10 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
     private var running = false
     private var lastFrameNanos = 0L
 
-    private var idleTime = 0f
+    // crossfade：切换动作后的一小段时间里，把上一段动画的姿势混合进来，避免画面跳变
+    private var fadeFromIndex = -1
+    private var fadeFromTime = 0f
+    private var fadeElapsed = 0f
 
     init {
         view.scene = scene
@@ -106,6 +122,16 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
 
         animator = asset.instance.animator
         animationIndex = findAnimationIndices(animator)
+
+        val durations = Move.entries.associateWith { move ->
+            animator.getAnimationDuration(animationIndex.getValue(move))
+        }
+        Log.d(TAG, "动画时长: $durations")
+        comboStateMachine = ComboStateMachine(
+            durations = durations,
+            cancelPoint = ComboStateMachine.DEFAULT_CANCEL_POINT,
+            onMoveChanged = ::onMoveChanged,
+        )
 
         camera.lookAt(
             0.0, 0.0, 5.5,
@@ -166,6 +192,11 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
         uiHelper.attachTo(surfaceView)
     }
 
+    /** "攻击"按钮的点击入口，具体是立即出招还是记为预输入由状态机判断。 */
+    fun attack() {
+        comboStateMachine.onAttack()
+    }
+
     fun resume() {
         if (running) return
         running = true
@@ -200,11 +231,41 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
         }
     }
 
+    /**
+     * 每帧先推进状态机（取消点 / 100% 两个检查点的切换都在这里发生），
+     * 再按状态机给出的动作和时间摆骨骼，保证渲染的永远是切换后的状态。
+     */
     private fun updateAnimation(deltaSeconds: Float) {
-        val idle = animationIndex.getValue(Move.IDLE)
-        idleTime = (idleTime + deltaSeconds) % animator.getAnimationDuration(idle)
-        animator.applyAnimation(idle, idleTime)
+        comboStateMachine.update(deltaSeconds)
+
+        val currentIndex = animationIndex.getValue(comboStateMachine.currentMove)
+        animator.applyAnimation(currentIndex, comboStateMachine.currentTime)
+
+        if (fadeFromIndex >= 0) {
+            if (fadeElapsed < CROSS_FADE_SECONDS) {
+                // 上一段动画继续往前走，alpha 从 0 升到 1，姿势逐渐过渡到当前动画
+                val fromTime = clampToClip(fadeFromIndex, fadeFromTime + fadeElapsed)
+                animator.applyCrossFade(fadeFromIndex, fromTime, fadeElapsed / CROSS_FADE_SECONDS)
+                fadeElapsed += deltaSeconds
+            } else {
+                fadeFromIndex = -1
+            }
+        }
+
         animator.updateBoneMatrices()
+    }
+
+    private fun onMoveChanged(from: Move, fromTime: Float, to: Move) {
+        Log.d(TAG, "动作切换: $from(${"%.2f".format(fromTime)}s) -> $to")
+        fadeFromIndex = animationIndex.getValue(from)
+        fadeFromTime = fromTime
+        fadeElapsed = 0f
+    }
+
+    /** idle 循环播放，时间可以随便往前走；一次性的连招动画则停在末帧。 */
+    private fun clampToClip(index: Int, time: Float): Float {
+        if (index == animationIndex.getValue(Move.IDLE)) return time
+        return time.coerceAtMost(animator.getAnimationDuration(index) - CLIP_END_EPSILON)
     }
 
     fun destroy() {
