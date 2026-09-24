@@ -167,11 +167,27 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
         }
     }
 
-    /** 把模型缩放、平移到以原点为中心、边长为 2 的立方体内，方便摆相机。 */
+    /**
+     * 把模型缩放、平移到以原点为中心、边长为 2 的立方体内，方便摆相机。
+     *
+     * 不能用 asset.boundingBox：它会叠加网格节点的父级变换（Mixamo 导出的 Armature 带 0.01 缩放和 90° 旋转），
+     * 而蒙皮网格实际由骨骼矩阵摆放、不受这些节点变换影响，算出来的盒子会比角色小 100 倍。
+     * 这里改用各 renderable 的本地包围盒，对蒙皮网格来说就是绑定姿势下的顶点范围。
+     */
     private fun fitIntoUnitCube(asset: FilamentAsset) {
-        val box = asset.boundingBox
-        val center = box.center
-        val halfExtent = box.halfExtent
+        val rm = engine.renderableManager
+        val min = FloatArray(3) { Float.MAX_VALUE }
+        val maxCorner = FloatArray(3) { -Float.MAX_VALUE }
+        for (entity in asset.renderableEntities) {
+            val box = rm.getAxisAlignedBoundingBox(rm.getInstance(entity), null)
+            for (i in 0..2) {
+                min[i] = minOf(min[i], box.center[i] - box.halfExtent[i])
+                maxCorner[i] = max(maxCorner[i], box.center[i] + box.halfExtent[i])
+            }
+        }
+        val center = FloatArray(3) { (min[it] + maxCorner[it]) / 2f }
+        val halfExtent = FloatArray(3) { (maxCorner[it] - min[it]) / 2f }
+        Log.d(TAG, "asset.boundingBox 半尺寸: ${asset.boundingBox.halfExtent.contentToString()}，蒙皮网格半尺寸: ${halfExtent.contentToString()}")
         val maxExtent = 2.0f * max(halfExtent[0], max(halfExtent[1], halfExtent[2]))
         val scale = 2.0f / maxExtent
         // 列主序矩阵：先平移到原点，再统一缩放
