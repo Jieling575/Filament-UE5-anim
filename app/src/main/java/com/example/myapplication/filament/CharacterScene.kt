@@ -1,6 +1,7 @@
 package com.example.myapplication.filament
 
 import android.content.Context
+import android.opengl.Matrix
 import android.util.Log
 import android.view.Choreographer
 import android.view.Surface
@@ -37,12 +38,16 @@ import kotlin.math.max
  * [transparentBackground] 为 true 时不画背景、输出带 alpha 的画面（AR 模式叠加在摄像头预览上用），
  * 否则用纯色 skybox 做背景。
  *
+ * [hiddenUntilPlaced] 为 true 时角色一开始不在场景里，调用 [place] 后才以弹出动画出现在预设位置
+ * （AR 模式点击屏幕放置用）；否则一创建就显示在画面中央。
+ *
  * 所有方法都在主线程调用。
  */
 class CharacterScene(
     context: Context,
     modelAssetPath: String,
     private val transparentBackground: Boolean = false,
+    hiddenUntilPlaced: Boolean = false,
 ) : Choreographer.FrameCallback {
 
     companion object {
@@ -59,6 +64,21 @@ class CharacterScene(
          * 一次性动画要取末帧时用 时长 - 这个值。
          */
         private const val CLIP_END_EPSILON = 1e-4f
+
+        /** 放置后相对原始大小的缩放，比普通模式小一些，给底部的攻击按钮留出空间。 */
+        private const val PLACED_SCALE = 0.7f
+
+        /**
+         * 放置后脚底所在的世界坐标高度。相机在 z = 5.5、垂直视角 45°，
+         * z = 0 平面上可见范围约为 y ∈ [-2.28, 2.28]，-1.3 大致在屏幕下方约 1/5 处。
+         */
+        private const val PLACED_FOOT_Y = -1.3f
+
+        /** 弹出动画时长。 */
+        private const val POP_IN_SECONDS = 0.3f
+
+        /** 弹出动画的起始缩放，不从 0 开始，避免缩放为 0 的退化矩阵。 */
+        private const val POP_IN_START_SCALE = 0.01f
 
         init {
             Filament.init()
@@ -81,6 +101,19 @@ class CharacterScene(
     private val resourceLoader = ResourceLoader(engine)
     private val asset: FilamentAsset
     private val animator: Animator
+
+    /** 把模型归一化到原点附近、边长为 2 的立方体内的变换，见 [computeFitTransform]。 */
+    private val fitTransform: FloatArray
+
+    /** 归一化后脚底（绑定姿势包围盒底部）的 y 坐标。 */
+    private var fitFootY = 0f
+
+    /** 角色是否已放置（在场景中可见）。 */
+    var isPlaced = !hiddenUntilPlaced
+        private set
+
+    /** 弹出动画已经播放的时间，小于 0 表示没有在播放。 */
+    private var popInElapsed = -1f
 
     /** 每个动作在 glb 中的动画索引，按名字查出来的。 */
     private val animationIndex: Map<Move, Int>
@@ -136,8 +169,11 @@ class CharacterScene(
         scene.indirectLight = indirectLight
 
         asset = loadAsset(context, modelAssetPath)
-        scene.addEntities(asset.entities)
-        fitIntoUnitCube(asset)
+        fitTransform = computeFitTransform(asset)
+        if (isPlaced) {
+            scene.addEntities(asset.entities)
+            setRootTransform(fitTransform)
+        }
 
         animator = asset.instance.animator
         animationIndex = findAnimationIndices(animator)
@@ -187,13 +223,13 @@ class CharacterScene(
     }
 
     /**
-     * 把模型缩放、平移到以原点为中心、边长为 2 的立方体内，方便摆相机。
+     * 计算把模型缩放、平移到以原点为中心、边长为 2 的立方体内的变换，方便摆相机。
      *
      * 不能用 asset.boundingBox：它会叠加网格节点的父级变换（Mixamo 导出的 Armature 带 0.01 缩放和 90° 旋转），
      * 而蒙皮网格实际由骨骼矩阵摆放、不受这些节点变换影响，算出来的盒子会比角色小 100 倍。
      * 这里改用各 renderable 的本地包围盒，对蒙皮网格来说就是绑定姿势下的顶点范围。
      */
-    private fun fitIntoUnitCube(asset: FilamentAsset) {
+    private fun computeFitTransform(asset: FilamentAsset): FloatArray {
         val rm = engine.renderableManager
         val min = FloatArray(3) { Float.MAX_VALUE }
         val maxCorner = FloatArray(3) { -Float.MAX_VALUE }
@@ -209,15 +245,54 @@ class CharacterScene(
         Log.d(TAG, "asset.boundingBox 半尺寸: ${asset.boundingBox.halfExtent.contentToString()}，蒙皮网格半尺寸: ${halfExtent.contentToString()}")
         val maxExtent = 2.0f * max(halfExtent[0], max(halfExtent[1], halfExtent[2]))
         val scale = 2.0f / maxExtent
+        fitFootY = (min[1] - center[1]) * scale
         // 列主序矩阵：先平移到原点，再统一缩放
-        val transform = floatArrayOf(
+        return floatArrayOf(
             scale, 0f, 0f, 0f,
             0f, scale, 0f, 0f,
             0f, 0f, scale, 0f,
             -center[0] * scale, -center[1] * scale, -center[2] * scale, 1f,
         )
+    }
+
+    private fun setRootTransform(transform: FloatArray) {
         val tm = engine.transformManager
         tm.setTransform(tm.getInstance(asset.root), transform)
+    }
+
+    /**
+     * 放置后的变换：在归一化的基础上以脚底为支点缩放，再把脚底移到 [PLACED_FOOT_Y]。
+     * [popScale] 是弹出动画的进度缩放，1 为最终大小。
+     */
+    private fun applyPlacedTransform(popScale: Float) {
+        val placement = FloatArray(16)
+        Matrix.setIdentityM(placement, 0)
+        Matrix.translateM(placement, 0, 0f, PLACED_FOOT_Y, 0f)
+        val scale = PLACED_SCALE * popScale
+        Matrix.scaleM(placement, 0, scale, scale, scale)
+        Matrix.translateM(placement, 0, 0f, -fitFootY, 0f)
+        val transform = FloatArray(16)
+        Matrix.multiplyMM(transform, 0, placement, 0, fitTransform, 0)
+        setRootTransform(transform)
+    }
+
+    /** 放置角色：加入场景并播放弹出动画。已放置时不做任何事。 */
+    fun place() {
+        if (isPlaced) return
+        isPlaced = true
+        applyPlacedTransform(POP_IN_START_SCALE)
+        scene.addEntities(asset.entities)
+        popInElapsed = 0f
+    }
+
+    private fun updatePopIn(deltaSeconds: Float) {
+        if (popInElapsed < 0f) return
+        popInElapsed += deltaSeconds
+        val t = (popInElapsed / POP_IN_SECONDS).coerceAtMost(1f)
+        // ease-out cubic：开头快、结尾慢慢停住
+        val eased = 1f - (1f - t) * (1f - t) * (1f - t)
+        applyPlacedTransform(POP_IN_START_SCALE + (1f - POP_IN_START_SCALE) * eased)
+        if (t >= 1f) popInElapsed = -1f
     }
 
     fun attachTo(surfaceView: SurfaceView) {
@@ -263,6 +338,7 @@ class CharacterScene(
         }
         lastFrameNanos = frameTimeNanos
         updateAnimation(deltaSeconds)
+        updatePopIn(deltaSeconds)
 
         val swapChain = swapChain ?: return
         if (!uiHelper.isReadyToRender) return
