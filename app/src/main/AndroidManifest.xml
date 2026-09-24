@@ -2,6 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- AR 模式用摄像头画面做背景 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- 摄像头只有 AR 模式用到，没有摄像头的设备也能装、能用普通 3D 模式 -->
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="false" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

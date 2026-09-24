@@ -24,6 +24,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.example.myapplication.ar.ArScreen
 import com.example.myapplication.ui.ModeSelectScreen
 import com.example.myapplication.ui.rememberCharacterScene
 import com.example.myapplication.ui.theme.MyApplicationTheme
@@ -41,7 +42,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { MODE_SELECT, NORMAL_3D }
+private enum class Screen { MODE_SELECT, NORMAL_3D, AR }
 
 @Composable
 private fun App() {
@@ -49,11 +50,15 @@ private fun App() {
     when (screen) {
         Screen.MODE_SELECT -> ModeSelectScreen(
             onNormal3d = { screen = Screen.NORMAL_3D },
-            onAr = { /* AR 模式尚未接入 */ },
+            onAr = { screen = Screen.AR },
         )
         Screen.NORMAL_3D -> {
             BackHandler { screen = Screen.MODE_SELECT }
             ComboScreen()
+        }
+        Screen.AR -> {
+            BackHandler { screen = Screen.MODE_SELECT }
+            ArScreen(onBack = { screen = Screen.MODE_SELECT })
         }
     }
 }

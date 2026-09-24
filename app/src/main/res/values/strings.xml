@@ -3,4 +3,10 @@
     <string name="attack">攻击</string>
     <string name="mode_normal_3d">普通 3D 模式</string>
     <string name="mode_ar">AR 模式</string>
+    <string name="camera_permission_rationale">AR 模式需要使用摄像头，把实时画面作为背景。</string>
+    <string name="camera_permission_denied_forever">摄像头权限已被拒绝且不再询问，请在系统设置中为本应用开启摄像头权限。</string>
+    <string name="camera_permission_request">授予摄像头权限</string>
+    <string name="camera_permission_open_settings">去系统设置开启</string>
+    <string name="camera_open_failed">无法打开后置摄像头</string>
+    <string name="back">返回</string>
 </resources>
