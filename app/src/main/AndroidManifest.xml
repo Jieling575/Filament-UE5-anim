@@ -2,6 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- ARCore 要求设备支持 AR；声明为 required 后 Play 商店只会向支持 ARCore 的设备分发 -->
+    <uses-feature
+        android:name="android.hardware.camera.ar"
+        android:required="true" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -11,6 +17,11 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.MyApplication">
+        <!-- 启动时若未安装 Google Play Services for AR，由 ARCore 引导安装 -->
+        <meta-data
+            android:name="com.google.ar.core"
+            android:value="required" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
