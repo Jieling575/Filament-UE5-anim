@@ -22,7 +22,7 @@ import com.example.myapplication.ui.rememberCharacterScene
 /**
  * AR 模式：摄像头实时画面作为背景，Filament 渲染的角色叠在上面。
  * 层级从下到上：PreviewView 的 SurfaceView → Filament 的 SurfaceView（MediaOverlay、透明）→ Compose 控件。
- * 角色一开始不显示，点击屏幕任意位置后弹出在预设位置，之后的点击不再生效。
+ * 角色一开始不显示，点击屏幕后弹出在点击位置（越靠下越大），之后的点击不再生效。
  */
 @Composable
 fun ArScreen(onBack: () -> Unit) {
@@ -40,7 +40,8 @@ fun ArScreen(onBack: () -> Unit) {
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(characterScene) {
-                        detectTapGestures { characterScene.place() }
+                        // 这一层和 SurfaceView 同样铺满，点击坐标即渲染区域内的像素坐标
+                        detectTapGestures { offset -> characterScene.place(offset.x, offset.y) }
                     },
             )
             if (cameraFailed) {

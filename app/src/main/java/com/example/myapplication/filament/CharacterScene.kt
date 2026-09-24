@@ -29,6 +29,7 @@ import com.google.android.filament.gltfio.UbershaderProvider
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.max
+import kotlin.math.tan
 
 /**
  * 基础 Filament 场景：Engine / Renderer / Scene / View / Camera / Light，
@@ -65,14 +66,21 @@ class CharacterScene(
          */
         private const val CLIP_END_EPSILON = 1e-4f
 
-        /** 放置后相对原始大小的缩放，比普通模式小一些，给底部的攻击按钮留出空间。 */
-        private const val PLACED_SCALE = 0.7f
+        /** 相机位于 (0, 0, CAMERA_DISTANCE) 看向原点。 */
+        private const val CAMERA_DISTANCE = 5.5
 
-        /**
-         * 放置后脚底所在的世界坐标高度。相机在 z = 5.5、垂直视角 45°，
-         * z = 0 平面上可见范围约为 y ∈ [-2.28, 2.28]，-1.3 大致在屏幕下方约 1/5 处。
-         */
-        private const val PLACED_FOOT_Y = -1.3f
+        /** 相机垂直视角（度）。 */
+        private const val CAMERA_FOV_DEGREES = 45.0
+
+        // 可放置区域，用 NDC 坐标表示（-1 为屏幕下沿/左沿，1 为上沿/右沿），点击超出范围时就近夹到边界。
+        // 纵向 [-0.6, 0.2] 约为屏幕从上往下 40% ~ 80% 处：再往上角色会顶到状态栏，再往下会压住攻击按钮。
+        private const val PLACE_NEAR_NDC_Y = -0.6f
+        private const val PLACE_FAR_NDC_Y = 0.2f
+        private const val PLACE_MAX_NDC_X = 0.8f
+
+        /** 近大远小：脚底在可放置区域最下沿（近）和最上沿（远）时的缩放，中间线性插值。 */
+        private const val PLACE_NEAR_SCALE = 0.8f
+        private const val PLACE_FAR_SCALE = 0.35f
 
         /** 弹出动画时长。 */
         private const val POP_IN_SECONDS = 0.3f
@@ -114,6 +122,15 @@ class CharacterScene(
 
     /** 弹出动画已经播放的时间，小于 0 表示没有在播放。 */
     private var popInElapsed = -1f
+
+    // 放置后脚底的世界坐标（z = 0 平面上）和近大远小的缩放
+    private var placedFootX = 0f
+    private var placedFootY = 0f
+    private var placedScale = 1f
+
+    // 渲染区域大小（像素），用于把点击坐标换算到世界坐标
+    private var viewportWidth = 0
+    private var viewportHeight = 0
 
     /** 每个动作在 glb 中的动画索引，按名字查出来的。 */
     private val animationIndex: Map<Move, Int>
@@ -189,7 +206,7 @@ class CharacterScene(
         )
 
         camera.lookAt(
-            0.0, 0.0, 5.5,
+            0.0, 0.0, CAMERA_DISTANCE,
             0.0, 0.0, 0.0,
             0.0, 1.0, 0.0,
         )
@@ -261,14 +278,14 @@ class CharacterScene(
     }
 
     /**
-     * 放置后的变换：在归一化的基础上以脚底为支点缩放，再把脚底移到 [PLACED_FOOT_Y]。
+     * 放置后的变换：在归一化的基础上以脚底为支点缩放，再把脚底移到放置点。
      * [popScale] 是弹出动画的进度缩放，1 为最终大小。
      */
     private fun applyPlacedTransform(popScale: Float) {
         val placement = FloatArray(16)
         Matrix.setIdentityM(placement, 0)
-        Matrix.translateM(placement, 0, 0f, PLACED_FOOT_Y, 0f)
-        val scale = PLACED_SCALE * popScale
+        Matrix.translateM(placement, 0, placedFootX, placedFootY, 0f)
+        val scale = placedScale * popScale
         Matrix.scaleM(placement, 0, scale, scale, scale)
         Matrix.translateM(placement, 0, 0f, -fitFootY, 0f)
         val transform = FloatArray(16)
@@ -276,10 +293,25 @@ class CharacterScene(
         setRootTransform(transform)
     }
 
-    /** 放置角色：加入场景并播放弹出动画。已放置时不做任何事。 */
-    fun place() {
-        if (isPlaced) return
+    /**
+     * 在点击位置放置角色：脚底落在点击点（渲染区域内的像素坐标）反投影到 z = 0 平面的位置，
+     * 越靠下缩放越大、越靠上越小，模拟近大远小。加入场景并播放弹出动画。
+     * 已放置、或渲染区域大小还未知时不做任何事。
+     */
+    fun place(screenX: Float, screenY: Float) {
+        if (isPlaced || viewportWidth == 0 || viewportHeight == 0) return
         isPlaced = true
+
+        val ndcX = (2f * screenX / viewportWidth - 1f).coerceIn(-PLACE_MAX_NDC_X, PLACE_MAX_NDC_X)
+        val ndcY = (1f - 2f * screenY / viewportHeight).coerceIn(PLACE_NEAR_NDC_Y, PLACE_FAR_NDC_Y)
+        // z = 0 平面上可见范围的一半高度 / 宽度
+        val halfHeight = (CAMERA_DISTANCE * tan(Math.toRadians(CAMERA_FOV_DEGREES / 2))).toFloat()
+        val halfWidth = halfHeight * viewportWidth / viewportHeight
+        placedFootX = ndcX * halfWidth
+        placedFootY = ndcY * halfHeight
+        val farness = (ndcY - PLACE_NEAR_NDC_Y) / (PLACE_FAR_NDC_Y - PLACE_NEAR_NDC_Y)
+        placedScale = PLACE_NEAR_SCALE + (PLACE_FAR_SCALE - PLACE_NEAR_SCALE) * farness
+
         applyPlacedTransform(POP_IN_START_SCALE)
         scene.addEntities(asset.entities)
         popInElapsed = 0f
@@ -425,8 +457,10 @@ class CharacterScene(
         }
 
         override fun onResized(width: Int, height: Int) {
+            viewportWidth = width
+            viewportHeight = height
             val aspect = width.toDouble() / height.toDouble()
-            camera.setProjection(45.0, aspect, 0.1, 100.0, Camera.Fov.VERTICAL)
+            camera.setProjection(CAMERA_FOV_DEGREES, aspect, 0.1, 100.0, Camera.Fov.VERTICAL)
             view.viewport = Viewport(0, 0, width, height)
         }
     }
