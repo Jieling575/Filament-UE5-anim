@@ -15,6 +15,7 @@ import com.google.android.filament.IndirectLight
 import com.google.android.filament.LightManager
 import com.google.android.filament.Skybox
 import com.google.android.filament.SwapChain
+import com.google.android.filament.View
 import com.google.android.filament.Viewport
 import com.google.android.filament.android.DisplayHelper
 import com.google.android.filament.android.UiHelper
@@ -33,9 +34,16 @@ import kotlin.math.max
  * 加载 glb 角色模型，并用 Choreographer 驱动逐帧渲染和骨骼动画。
  * 播放哪段动画、播到第几秒由 [ComboStateMachine] 决定，这里只负责把结果应用到骨骼上。
  *
+ * [transparentBackground] 为 true 时不画背景、输出带 alpha 的画面（AR 模式叠加在摄像头预览上用），
+ * 否则用纯色 skybox 做背景。
+ *
  * 所有方法都在主线程调用。
  */
-class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.FrameCallback {
+class CharacterScene(
+    context: Context,
+    modelAssetPath: String,
+    private val transparentBackground: Boolean = false,
+) : Choreographer.FrameCallback {
 
     companion object {
         private const val TAG = "CharacterScene"
@@ -66,7 +74,7 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
     private val camera = engine.createCamera(cameraEntity)
     private val sunEntity = EntityManager.get().create()
     private val indirectLight: IndirectLight
-    private val skybox: Skybox
+    private val skybox: Skybox?
 
     private val materialProvider = UbershaderProvider(engine)
     private val assetLoader = AssetLoader(engine, materialProvider, EntityManager.get())
@@ -97,8 +105,19 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
         view.scene = scene
         view.camera = camera
 
-        skybox = Skybox.Builder().color(0.12f, 0.12f, 0.14f, 1.0f).build(engine)
-        scene.skybox = skybox
+        if (transparentBackground) {
+            // 没有 skybox，每帧清成 alpha = 0，没画到角色的像素透出下层的摄像头画面
+            skybox = null
+            renderer.clearOptions = renderer.clearOptions.apply {
+                clear = true
+                clearColor = doubleArrayOf(0.0, 0.0, 0.0, 0.0)
+            }
+            // 默认的 OPAQUE 会让后处理把 alpha 当成 1 输出
+            view.blendMode = View.BlendMode.TRANSLUCENT
+        } else {
+            skybox = Skybox.Builder().color(0.12f, 0.12f, 0.14f, 1.0f).build(engine)
+            scene.skybox = skybox
+        }
 
         // 主光源：斜上方打下来的方向光
         LightManager.Builder(LightManager.Type.DIRECTIONAL)
@@ -205,6 +224,12 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
         this.surfaceView = surfaceView
         displayHelper = DisplayHelper(surfaceView.context)
         uiHelper.renderCallback = SurfaceCallback()
+        if (transparentBackground) {
+            // UiHelper 据此把 Surface 设为 TRANSLUCENT，并用 setZOrderMediaOverlay 叠在
+            // 摄像头预览的 SurfaceView 之上、应用窗口之下（setZOrderOnTop 会盖住 Compose 的按钮）
+            uiHelper.isOpaque = false
+            uiHelper.isMediaOverlay = true
+        }
         uiHelper.attachTo(surfaceView)
     }
 
@@ -296,7 +321,7 @@ class CharacterScene(context: Context, modelAssetPath: String) : Choreographer.F
 
         engine.destroyEntity(sunEntity)
         engine.destroyIndirectLight(indirectLight)
-        engine.destroySkybox(skybox)
+        skybox?.let { engine.destroySkybox(it) }
         engine.destroyRenderer(renderer)
         engine.destroyView(view)
         engine.destroyScene(scene)

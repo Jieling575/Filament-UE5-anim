@@ -28,7 +28,12 @@ private const val TAG = "CameraPreview"
 fun CameraPreview(onError: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val previewView = remember { PreviewView(context) }
+    val previewView = remember {
+        PreviewView(context).apply {
+            // 必须用 SurfaceView 实现：TextureView 属于应用窗口，会盖住叠在上面的 Filament SurfaceView
+            implementationMode = PreviewView.ImplementationMode.PERFORMANCE
+        }
+    }
 
     DisposableEffect(lifecycleOwner, previewView) {
         val controller = CameraPreviewController(context, lifecycleOwner, previewView, onError)

@@ -16,10 +16,10 @@ private const val MODEL_PATH = "models/character.glb"
  * 期间跟随 Activity 的 onResume / onPause 开始、停止逐帧渲染。
  */
 @Composable
-fun rememberCharacterScene(): CharacterScene {
+fun rememberCharacterScene(transparentBackground: Boolean = false): CharacterScene {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val scene = remember { CharacterScene(context, MODEL_PATH) }
+    val scene = remember { CharacterScene(context, MODEL_PATH, transparentBackground) }
     DisposableEffect(lifecycle, scene) {
         // addObserver 会补发到当前状态为止的事件，已处于 RESUMED 时会立即收到 ON_RESUME
         val observer = LifecycleEventObserver { _, event ->
