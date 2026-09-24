@@ -39,7 +39,7 @@ import kotlin.math.tan
  * [transparentBackground] 为 true 时不画背景、输出带 alpha 的画面（AR 模式叠加在摄像头预览上用），
  * 否则用纯色 skybox 做背景。
  *
- * [hiddenUntilPlaced] 为 true 时角色一开始不在场景里，调用 [place] 后才以弹出动画出现在预设位置
+ * [hiddenUntilPlaced] 为 true 时角色一开始不在场景里，调用 [place] 后才以弹出动画出现在点击位置
  * （AR 模式点击屏幕放置用）；否则一创建就显示在画面中央。
  *
  * 所有方法都在主线程调用。
@@ -116,7 +116,7 @@ class CharacterScene(
     /** 归一化后脚底（绑定姿势包围盒底部）的 y 坐标。 */
     private var fitFootY = 0f
 
-    /** 角色是否已放置（在场景中可见）。 */
+    /** 角色是否已加入场景（可见）。首次放置后一直为 true，不限制之后重新放置。 */
     var isPlaced = !hiddenUntilPlaced
         private set
 
@@ -295,12 +295,15 @@ class CharacterScene(
 
     /**
      * 在点击位置放置角色：脚底落在点击点（渲染区域内的像素坐标）反投影到 z = 0 平面的位置，
-     * 越靠下缩放越大、越靠上越小，模拟近大远小。加入场景并播放弹出动画。
-     * 已放置、或渲染区域大小还未知时不做任何事。
+     * 越靠下缩放越大、越靠上越小，模拟近大远小。
+     *
+     * 可以反复调用：每次都移动到新位置、重播弹出动画，并把连招重置回 idle，
+     * 丢弃上一次打到一半的连招和 crossfade。
+     *
+     * @return 是否放置成功；渲染区域大小还未知（Surface 未就绪）时返回 false，不做任何事
      */
-    fun place(screenX: Float, screenY: Float) {
-        if (isPlaced || viewportWidth == 0 || viewportHeight == 0) return
-        isPlaced = true
+    fun place(screenX: Float, screenY: Float): Boolean {
+        if (viewportWidth == 0 || viewportHeight == 0) return false
 
         val ndcX = (2f * screenX / viewportWidth - 1f).coerceIn(-PLACE_MAX_NDC_X, PLACE_MAX_NDC_X)
         val ndcY = (1f - 2f * screenY / viewportHeight).coerceIn(PLACE_NEAR_NDC_Y, PLACE_FAR_NDC_Y)
@@ -312,9 +315,16 @@ class CharacterScene(
         val farness = (ndcY - PLACE_NEAR_NDC_Y) / (PLACE_FAR_NDC_Y - PLACE_NEAR_NDC_Y)
         placedScale = PLACE_NEAR_SCALE + (PLACE_FAR_SCALE - PLACE_NEAR_SCALE) * farness
 
+        comboStateMachine.reset()
+        fadeFromIndex = -1
+
         applyPlacedTransform(POP_IN_START_SCALE)
-        scene.addEntities(asset.entities)
+        if (!isPlaced) {
+            isPlaced = true
+            scene.addEntities(asset.entities)
+        }
         popInElapsed = 0f
+        return true
     }
 
     private fun updatePopIn(deltaSeconds: Float) {

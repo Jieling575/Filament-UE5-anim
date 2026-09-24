@@ -167,6 +167,36 @@ class ComboStateMachineTest {
         assertEquals(0.8125f, reportedTime, 1e-6f)
     }
 
+    @Test
+    fun resetMidComboReturnsToIdleStartAndDropsBuffer() {
+        val sm = machine()
+        sm.onAttack()
+        sm.onAttack()
+        sm.playUntil(0.5f)
+        transitions.clear()
+        sm.reset()
+        assertEquals(Move.IDLE, sm.currentMove)
+        assertEquals(0f, sm.currentTime)
+        assertFalse(sm.pendingInput)
+        // 硬切换，不回调
+        assertTrue(transitions.isEmpty())
+        // 缓冲已丢弃：之后一直停在 idle
+        repeat(64 * 3) { sm.update(step) }
+        assertEquals(Move.IDLE, sm.currentMove)
+    }
+
+    @Test
+    fun attackAfterResetStartsFreshFromCombo1() {
+        val sm = machine()
+        sm.onAttack()
+        sm.onAttack()
+        sm.playUntil(1f)
+        assertEquals(Move.COMBO2, sm.currentMove)
+        sm.reset()
+        sm.onAttack()
+        assertEquals(Move.COMBO1, sm.currentMove)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun rejectsCancelPointOutOfRange() {
         machine(cancelPoint = 1.2f)

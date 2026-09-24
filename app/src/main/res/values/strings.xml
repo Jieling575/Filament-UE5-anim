@@ -9,4 +9,5 @@
     <string name="camera_permission_open_settings">去系统设置开启</string>
     <string name="camera_open_failed">无法打开后置摄像头</string>
     <string name="back">返回</string>
+    <string name="ar_tap_to_place">点击屏幕放置角色</string>
 </resources>

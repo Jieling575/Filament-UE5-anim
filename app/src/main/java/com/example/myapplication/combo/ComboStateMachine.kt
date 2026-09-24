@@ -106,6 +106,17 @@ class ComboStateMachine(
         }
     }
 
+    /**
+     * 立即回到 idle 起点并清空预输入缓冲，丢弃打到一半的连招。
+     * 这是硬切换，不回调 onMoveChanged（不需要 crossfade）。
+     */
+    fun reset() {
+        currentMove = Move.IDLE
+        currentTime = 0f
+        pendingInput = false
+        cancelPointChecked = false
+    }
+
     private fun startMove(move: Move) {
         val from = currentMove
         val fromTime = currentTime.coerceAtMost(durationOf(from))
